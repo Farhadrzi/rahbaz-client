@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.rahbaz.client</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>RahBaz</name>
+  <summary>Desktop GUI for coding agents via RahBaz Hub</summary>
+  <developer id="com.rahbaz">
+    <name>RahBaz</name>
+  </developer>
+  <description>
+    <p>
+      RahBaz is a desktop client for coding agents that talks only to your local
+      RahBaz Hub (OpenRouter-style gateway).
+    </p>
+    <p>
+      Install and run side-by-side with T3 Code; data lives under ~/.rahbaz.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.rahbaz.Client.desktop</launchable>
+  <icon type="stock">rahbaz</icon>
+  <provides>
+    <binary>rahbaz</binary>
+  </provides>
+  <categories>
+    <category>Development</category>
+  </categories>
+  <url type="homepage">https://github.com/Farhadrzi/rahbaz</url>
+  <url type="bugtracker">https://github.com/Farhadrzi/rahbaz/issues</url>
+  <url type="vcs-browser">https://github.com/Farhadrzi/rahbaz</url>
+</component>

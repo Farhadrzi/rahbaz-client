@@ -1,0 +1,212 @@
+# RahBaz Client desktop releases (Windows / Linux / macOS arm64 + x64).
+#
+# Automatic: push a version tag matching v*.*.* (example: v0.1.0)
+# Manual: Actions → Desktop release → Run workflow
+#
+# This is separate from RahBaz Hub (Farhadrzi/rahbaz). The Client installer
+# does NOT install Hub — users set Hub up themselves, then enter Hub URL + API key.
+#
+# Builds are unsigned unless you add optional signing secrets. Unsigned macOS /
+# Windows packages will show Gatekeeper / SmartScreen warnings.
+
+name: Desktop release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without leading v (example 0.1.0). Ignored for tag pushes."
+        required: false
+        default: "0.1.0"
+      create_release:
+        description: "Create/update a GitHub Release and upload artifacts"
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  T3CODE_DESKTOP_UPDATE_REPOSITORY: Farhadrzi/rahbaz-client
+  T3CODE_TELEMETRY_ENABLED: "false"
+  T3CODE_TELEMETRY_CHANNEL: "dev"
+  # Clerk/relay are unused for RahBaz Hub-only mode; keep empty placeholders so
+  # upstream packaging scripts that read the env do not fail closed.
+  T3CODE_CLERK_PUBLISHABLE_KEY: ""
+  T3CODE_CLERK_JWT_TEMPLATE: ""
+  T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: ""
+  T3CODE_RELAY_URL: ""
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.out.outputs.version }}
+      tag: ${{ steps.out.outputs.tag }}
+    steps:
+      - id: out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+            ver="${tag#v}"
+          else
+            ver="${{ inputs.version }}"
+            ver="${ver#v}"
+            tag="v${ver}"
+          fi
+          if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].+)?$ ]]; then
+            echo "Invalid version: $ver"
+            exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing RahBaz Client $tag"
+
+  build:
+    name: ${{ matrix.label }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            runner: windows-latest
+            platform: win
+            target: nsis
+            arch: x64
+            rust_target: x86_64-pc-windows-msvc
+          - label: Linux x64 AppImage
+            runner: ubuntu-22.04
+            platform: linux
+            target: AppImage
+            arch: x64
+            rust_target: x86_64-unknown-linux-gnu
+          - label: macOS Apple Silicon
+            runner: macos-14
+            platform: mac
+            target: dmg
+            arch: arm64
+            rust_target: aarch64-apple-darwin
+          - label: macOS Intel
+            runner: macos-13
+            platform: mac
+            target: dmg
+            arch: x64
+            rust_target: x86_64-apple-darwin
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Linux packaging dependencies
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libfuse2 rpm fakeroot dpkg \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            xdg-utils libatspi2.0-0 libuuid1 libsecret-1-0
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Align package versions
+        shell: bash
+        run: node scripts/update-release-package-versions.ts "${{ needs.version.outputs.version }}"
+
+      - name: Build desktop artifact
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/rahbaz-out"
+          mkdir -p "$out"
+          node scripts/build-desktop-artifact.ts \
+            --platform "${{ matrix.platform }}" \
+            --target "${{ matrix.target }}" \
+            --arch "${{ matrix.arch }}" \
+            --verbose \
+            --output-dir "$out"
+          echo "OUT_DIR=$out" >> "$GITHUB_ENV"
+          ls -la "$out"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rahbaz-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ env.OUT_DIR }}/**
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: GitHub Release
+    needs: [version, build]
+    if: github.event_name == 'push' || inputs.create_release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: rahbaz-*
+          merge-multiple: false
+
+      - name: List artifacts
+        shell: bash
+        run: find dist -type f | sort
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: RahBaz Client ${{ needs.version.outputs.tag }}
+          draft: false
+          prerelease: ${{ contains(needs.version.outputs.version, '-') }}
+          generate_release_notes: true
+          body: |
+            RahBaz Client ${{ needs.version.outputs.tag }}
+
+            ## Platforms
+            - Windows x64 (NSIS)
+            - Linux x64 (AppImage)
+            - macOS Apple Silicon (arm64 DMG)
+            - macOS Intel (x64 DMG)
+
+            ## Setup
+            1. Install and run **RahBaz Hub** yourself: https://github.com/Farhadrzi/rahbaz
+            2. Install this Client (does **not** install Hub)
+            3. Settings → RahBaz → Hub URL + gateway API key
+
+            Builds are **unsigned** unless repository signing secrets are configured.
+            macOS Gatekeeper / Windows SmartScreen warnings are expected for unsigned builds.
+
+            Hub repository: https://github.com/Farhadrzi/rahbaz
+          files: |
+            dist/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
