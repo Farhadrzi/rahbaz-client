@@ -186,9 +186,85 @@ jobs:
           pattern: rahbaz-*
           merge-multiple: false
 
-      - name: List artifacts
+      - name: Flatten artifacts and merge macOS updater manifests
         shell: bash
-        run: find dist -type f | sort
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          # Collect installers/blockmaps; keep per-arch mac manifests aside for merging.
+          shopt -s nullglob
+          mac_manifests=()
+          while IFS= read -r -d '' f; do
+            base="$(basename "$f")"
+            case "$base" in
+              latest-mac.yml)
+                mac_manifests+=("$f")
+                ;;
+              builder-debug.yml)
+                # Keep one copy for debugging; ignore duplicates by name.
+                cp -n "$f" "release-assets/$base" || true
+                ;;
+              *)
+                if [[ -e "release-assets/$base" ]]; then
+                  echo "Duplicate asset name: $base" >&2
+                  exit 1
+                fi
+                cp "$f" "release-assets/$base"
+                ;;
+            esac
+          done < <(find dist -type f -print0)
+
+          if [[ ${#mac_manifests[@]} -eq 0 ]]; then
+            echo "No latest-mac.yml artifacts found" >&2
+            exit 1
+          fi
+
+          printf '%s\n' "${mac_manifests[@]}" > /tmp/mac-manifests.txt
+          python3 <<'PY'
+          import pathlib, re
+
+          paths = [pathlib.Path(line.strip()) for line in pathlib.Path("/tmp/mac-manifests.txt").read_text().splitlines() if line.strip()]
+
+          def parse(path: pathlib.Path):
+              text = path.read_text(encoding="utf-8")
+              version = re.search(r"^version:\s*'?([^'\n]+)'?", text, re.M).group(1)
+              release_date = re.search(r"^releaseDate:\s*'([^']+)'", text, re.M).group(1)
+              files = []
+              for m in re.finditer(
+                  r"- url:\s*(\S+)\n\s+sha512:\s*(\S+)\n\s+size:\s*(\d+)",
+                  text,
+              ):
+                  files.append((m.group(1), m.group(2), int(m.group(3))))
+              if not files:
+                  raise SystemExit(f"no files in {path}")
+              return version, release_date, files
+
+          versions, dates, files_by_url = set(), [], {}
+          for path in paths:
+              version, release_date, files = parse(path)
+              versions.add(version)
+              dates.append(release_date)
+              for url, sha, size in files:
+                  prev = files_by_url.get(url)
+                  if prev and prev != (sha, size):
+                      raise SystemExit(f"conflict for {url}")
+                  files_by_url[url] = (sha, size)
+
+          if len(versions) != 1:
+              raise SystemExit(f"version mismatch: {versions}")
+          version = next(iter(versions))
+          release_date = max(dates)
+          lines = [f"version: '{version}'", "files:"]
+          for url, (sha, size) in files_by_url.items():
+              lines += [f"  - url: {url}", f"    sha512: {sha}", f"    size: {size}"]
+          lines.append(f"releaseDate: '{release_date}'")
+          out = pathlib.Path("release-assets/latest-mac.yml")
+          out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          print(f"merged {len(files_by_url)} mac updater entries -> {out}")
+          PY
+
+          echo "== release-assets =="
+          find release-assets -type f | sort
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -217,6 +293,6 @@ jobs:
 
             Hub repository: https://github.com/Farhadrzi/rahbaz
           files: |
-            dist/**/*
+            release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
