@@ -240,13 +240,20 @@ export const OpenCodeDriver: ProviderDriver<
         ensureOpenCodeBinary({
           configuredPath: configuredBinaryPath,
         }),
-      catch: (cause) =>
-        new ProviderDriverError({
+      catch: (cause) => {
+        const reason =
+          cause instanceof Error
+            ? cause.message
+            : typeof cause === "string"
+              ? cause
+              : "unknown error";
+        return new ProviderDriverError({
           driver: DRIVER_KIND,
           instanceId,
-          detail: "Failed to discover or install the OpenCode CLI for RahBaz.",
+          detail: `Failed to discover or install the OpenCode CLI for RahBaz. ${reason}`,
           cause,
-        }),
+        });
+      },
     });
     const effectiveConfig = {
       ...config,

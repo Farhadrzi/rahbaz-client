@@ -17,6 +17,7 @@ const execFileAsync = NodeUtil.promisify(NodeChildProcess.execFile);
 export const PINNED_OPENCODE_VERSION = "1.18.5";
 const OPENCODE_RELEASE_OWNER = "anomalyco";
 const OPENCODE_RELEASE_REPO = "opencode";
+const DOWNLOAD_USER_AGENT = `RahBaz-Client/${PINNED_OPENCODE_VERSION} (OpenCode bootstrap)`;
 
 export type EnsureOpenCodeResult = {
   readonly binaryPath: string;
@@ -91,20 +92,102 @@ async function resolveOnPath(command = "opencode"): Promise<string | null> {
   }
 }
 
-function releaseArchiveName(): string {
-  const arch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "x64" : process.arch;
-  if (process.platform === "win32") {
-    return `opencode-windows-${arch}.zip`;
-  }
-  if (process.platform === "darwin") {
-    return `opencode-darwin-${arch}.zip`;
-  }
-  return `opencode-linux-${arch}.tar.gz`;
+function releaseArch(): "arm64" | "x64" {
+  return process.arch === "arm64" ? "arm64" : "x64";
 }
 
-function releaseDownloadUrl(version = PINNED_OPENCODE_VERSION): string {
-  const file = releaseArchiveName();
+function releaseArchiveName(baseline = false): string {
+  const arch = releaseArch();
+  const baselineSuffix = baseline ? "-baseline" : "";
+  if (process.platform === "win32") {
+    return `opencode-windows-${arch}${baselineSuffix}.zip`;
+  }
+  if (process.platform === "darwin") {
+    return `opencode-darwin-${arch}${baselineSuffix}.zip`;
+  }
+  return `opencode-linux-${arch}${baselineSuffix}.tar.gz`;
+}
+
+function githubReleaseDownloadUrl(version: string, baseline = false): string {
+  const file = releaseArchiveName(baseline);
   return `https://github.com/${OPENCODE_RELEASE_OWNER}/${OPENCODE_RELEASE_REPO}/releases/download/v${version}/${file}`;
+}
+
+/** npm hosts the same platform binaries; more reliable when GitHub release CDN fails. */
+export function npmPlatformPackageName(baseline = false): string {
+  const arch = releaseArch();
+  const baselineSuffix = baseline ? "-baseline" : "";
+  if (process.platform === "win32") {
+    return `opencode-windows-${arch}${baselineSuffix}`;
+  }
+  if (process.platform === "darwin") {
+    return `opencode-darwin-${arch}${baselineSuffix}`;
+  }
+  return `opencode-linux-${arch}${baselineSuffix}`;
+}
+
+function npmPlatformTarballUrl(version: string, baseline = false): string {
+  const name = npmPlatformPackageName(baseline);
+  return `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`;
+}
+
+async function downloadToFile(
+  url: string,
+  destinationPath: string,
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  const response = await fetchImpl(url, {
+    redirect: "follow",
+    headers: {
+      "User-Agent": DOWNLOAD_USER_AGENT,
+      Accept: "*/*",
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} for ${url}`);
+  }
+
+  if (response.body) {
+    try {
+      await NodeStreamPromises.pipeline(
+        NodeStream.Readable.fromWeb(response.body as never),
+        NodeFS.createWriteStream(destinationPath),
+      );
+      return;
+    } catch (cause) {
+      // Some Electron builds expose a body that cannot be streamed via fromWeb.
+      if (!(cause instanceof Error)) throw cause;
+    }
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.byteLength === 0) {
+    throw new Error(`Empty download body for ${url}`);
+  }
+  await NodeFSP.writeFile(destinationPath, buffer);
+}
+
+async function downloadWithRetries(
+  url: string,
+  destinationPath: string,
+  fetchImpl: typeof fetch,
+  attempts = 3,
+): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await downloadToFile(url, destinationPath, fetchImpl);
+      return;
+    } catch (cause) {
+      lastError = cause;
+      if (attempt < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 750));
+      }
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`Download failed for ${url}: ${String(lastError)}`);
 }
 
 async function extractArchive(archivePath: string, destinationDir: string): Promise<void> {
@@ -119,17 +202,19 @@ async function extractArchive(archivePath: string, destinationDir: string): Prom
           "-Command",
           `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${destinationDir.replace(/'/g, "''")}' -Force`,
         ],
-        { windowsHide: true, timeout: 120_000 },
+        { windowsHide: true, timeout: 180_000 },
       );
       return;
     }
     await execFileAsync("unzip", ["-o", archivePath, "-d", destinationDir], {
-      timeout: 120_000,
+      timeout: 180_000,
     });
     return;
   }
+  // .tar.gz (GitHub linux or npm platform tarball)
   await execFileAsync("tar", ["-xzf", archivePath, "-C", destinationDir], {
-    timeout: 120_000,
+    timeout: 180_000,
+    windowsHide: true,
   });
 }
 
@@ -158,36 +243,26 @@ async function findExtractedBinary(root: string): Promise<string | null> {
   return null;
 }
 
-async function installPinnedOpenCode(input?: {
-  readonly productHome?: string;
-  readonly version?: string;
-  readonly fetchImpl?: typeof fetch;
+async function installFromUrl(input: {
+  readonly url: string;
+  readonly archiveName: string;
+  readonly productHome: string;
+  readonly version: string;
+  readonly fetchImpl: typeof fetch;
 }): Promise<string> {
-  const productHome = input?.productHome ?? productHomeFromEnv();
-  const version = input?.version ?? PINNED_OPENCODE_VERSION;
-  const fetchImpl = input?.fetchImpl ?? fetch;
-  const binDir = managedOpenCodeBinDir(productHome);
-  const target = managedOpenCodeBinaryPath(productHome);
+  const binDir = managedOpenCodeBinDir(input.productHome);
+  const target = managedOpenCodeBinaryPath(input.productHome);
   await NodeFSP.mkdir(binDir, { recursive: true });
-
-  const url = releaseDownloadUrl(version);
-  const response = await fetchImpl(url, { redirect: "follow" });
-  if (!response.ok || !response.body) {
-    throw new Error(`Failed to download OpenCode ${version}: HTTP ${response.status} for ${url}`);
-  }
 
   const tmpRoot = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "rahbaz-opencode-"));
   try {
-    const archivePath = NodePath.join(tmpRoot, releaseArchiveName());
-    await NodeStreamPromises.pipeline(
-      NodeStream.Readable.fromWeb(response.body as never),
-      NodeFS.createWriteStream(archivePath),
-    );
+    const archivePath = NodePath.join(tmpRoot, input.archiveName);
+    await downloadWithRetries(input.url, archivePath, input.fetchImpl);
     const extractDir = NodePath.join(tmpRoot, "extract");
     await extractArchive(archivePath, extractDir);
     const found = await findExtractedBinary(extractDir);
     if (!found) {
-      throw new Error(`OpenCode archive from ${url} did not contain an opencode binary.`);
+      throw new Error(`Archive from ${input.url} did not contain an opencode binary.`);
     }
     await NodeFSP.copyFile(found, target);
     if (process.platform !== "win32") {
@@ -195,7 +270,7 @@ async function installPinnedOpenCode(input?: {
     }
     await NodeFSP.writeFile(
       NodePath.join(binDir, "VERSION"),
-      `${version}\n# source ${url}\n# sha256 ${NodeCrypto.createHash("sha256")
+      `${input.version}\n# source ${input.url}\n# sha256 ${NodeCrypto.createHash("sha256")
         .update(await NodeFSP.readFile(archivePath))
         .digest("hex")}\n`,
       "utf8",
@@ -204,6 +279,57 @@ async function installPinnedOpenCode(input?: {
   } finally {
     await NodeFSP.rm(tmpRoot, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+async function installPinnedOpenCode(input?: {
+  readonly productHome?: string;
+  readonly version?: string;
+  readonly fetchImpl?: typeof fetch;
+}): Promise<string> {
+  const productHome = input?.productHome ?? productHomeFromEnv();
+  const version = input?.version ?? PINNED_OPENCODE_VERSION;
+  const fetchImpl = input?.fetchImpl ?? fetch;
+  const errors: string[] = [];
+
+  // Prefer npm registry first: GitHub release assets frequently 504 / block in some networks.
+  for (const baseline of [false, true]) {
+    // baseline packages exist for x64 only on some platforms; skip impossible names.
+    if (baseline && releaseArch() === "arm64") continue;
+    const url = npmPlatformTarballUrl(version, baseline);
+    try {
+      return await installFromUrl({
+        url,
+        archiveName: `${npmPlatformPackageName(baseline)}-${version}.tgz`,
+        productHome,
+        version,
+        fetchImpl,
+      });
+    } catch (cause) {
+      errors.push(`npm(${baseline ? "baseline" : "default"}): ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  }
+
+  for (const baseline of [false, true]) {
+    if (baseline && releaseArch() === "arm64") continue;
+    const url = githubReleaseDownloadUrl(version, baseline);
+    try {
+      return await installFromUrl({
+        url,
+        archiveName: releaseArchiveName(baseline),
+        productHome,
+        version,
+        fetchImpl,
+      });
+    } catch (cause) {
+      errors.push(
+        `github(${baseline ? "baseline" : "default"}): ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+  }
+
+  throw new Error(
+    `Could not install OpenCode ${version} for ${process.platform}/${process.arch}. ${errors.join(" | ")}`,
+  );
 }
 
 /**
