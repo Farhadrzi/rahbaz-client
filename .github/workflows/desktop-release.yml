@@ -103,7 +103,8 @@ jobs:
             arch: arm64
             rust_target: aarch64-apple-darwin
           - label: macOS Intel
-            runner: macos-13
+            # Build x64 on Apple Silicon runners via Rosetta (macos-13 capacity is scarce).
+            runner: macos-latest
             platform: mac
             target: dmg
             arch: x64
@@ -123,6 +124,14 @@ jobs:
             libfuse2 rpm fakeroot dpkg \
             libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
             xdg-utils libatspi2.0-0 libuuid1 libsecret-1-0
+
+      - name: Ensure Rosetta for macOS Intel (x64) builds
+        if: matrix.platform == 'mac' && matrix.arch == 'x64'
+        shell: bash
+        run: |
+          if [[ "$(uname -m)" == "arm64" ]] && ! /usr/bin/arch -x86_64 /usr/bin/true; then
+            sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+          fi
 
       - name: Setup dependencies
         uses: ./.github/actions/setup-ci-deps
