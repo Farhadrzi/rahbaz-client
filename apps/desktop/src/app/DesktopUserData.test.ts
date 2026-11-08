@@ -5,7 +5,7 @@ import * as Path from "effect/Path";
 
 import { resolveUserDataPath } from "./DesktopUserData.ts";
 
-it.effect("uses a RahBaz-specific Electron userData folder (not T3 Code)", () =>
+it.effect("uses a RahBaz-specific Electron userData folder (not RahBaz)", () =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
     const production = yield* resolveUserDataPath({

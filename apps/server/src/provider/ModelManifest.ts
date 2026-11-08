@@ -22,8 +22,9 @@ import bundledManifestJson from "./model-manifest.json" with { type: "json" };
 import { ProviderCompatibilityPolicy } from "./providerCompatibility.ts";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
 
-const MODEL_MANIFEST_URL =
-  "https://raw.githubusercontent.com/pingdotgg/t3code/main/apps/server/src/provider/model-manifest.json";
+// RahBaz ships its own Hub-oriented OpenCode pin (1.18.x). Do not pull upstream
+// RahBaz manifests — their OpenCode 2 policy would reintroduce false "Limited support".
+const MODEL_MANIFEST_URL: string | null = null;
 
 const MANIFEST_TTL_MS = 60 * 60 * 1000;
 
@@ -205,6 +206,11 @@ export const make = Effect.gen(function* () {
   // Only refresh takes the fetch semaphore; current must not wait on network I/O.
   const ensureDiskCacheLoaded = yield* Effect.cached(
     Effect.gen(function* () {
+      // RahBaz keeps Hub OpenCode policy local-only; ignore any cached upstream T3 manifest.
+      if (MODEL_MANIFEST_URL === null) {
+        manifest = BUNDLED_MODEL_MANIFEST;
+        return;
+      }
       const fromDisk = yield* fileSystem.readFileString(cachePath).pipe(
         Effect.flatMap((raw) => decodeManifestCache(raw)),
         Effect.catchCause(() => Effect.succeed(null)),
@@ -233,6 +239,11 @@ export const make = Effect.gen(function* () {
     if (settings !== null && !settings.enableProviderUpdateChecks) return manifest;
 
     lastAttemptMs = now;
+    if (MODEL_MANIFEST_URL === null) {
+      manifest = BUNDLED_MODEL_MANIFEST;
+      fetchedAtMs = now;
+      return manifest;
+    }
     const fetched = yield* httpClient.get(MODEL_MANIFEST_URL).pipe(
       Effect.flatMap(HttpClientResponse.filterStatusOk),
       Effect.flatMap((response) => response.json),

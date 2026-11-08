@@ -91,7 +91,6 @@ import { TerminalViewport } from "../ThreadTerminalDrawer";
 import { CloudEnvironmentConnectRows } from "../cloud/CloudEnvironmentConnectList";
 import { presentSavedCloudEnvironmentConnection } from "../cloud/cloudEnvironmentConnectionPresentation";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
-import { T3Wordmark } from "../T3Wordmark";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { CommandBlock } from "../CommandBlock";
@@ -111,7 +110,8 @@ type WizardStep = "connection" | "agents" | "import";
 const NO_ENVIRONMENTS: readonly EnvironmentId[] = [];
 
 const AGENT_ONBOARDING_THREAD_ID = ThreadId.make("onboarding-agent-setup");
-const ONBOARDING_STAGES = ["Connect", "Agents", "Projects"] as const;
+const ONBOARDING_STAGES = ["Connect", "Hub", "Projects"] as const;
+const DEFAULT_ONBOARDING_HUB_URL = "http://127.0.0.1:8317";
 const SCAN_LIMIT_MESSAGE = "Scan limit reached. Some projects or conversations may be missing.";
 
 export function WelcomeWizard({
@@ -239,13 +239,10 @@ export function WelcomeWizard({
         initialFocus={() => document.getElementById("onboarding-pairing-url") ?? true}
       >
         <WizardHeader
-          title="Set up T3 Code"
+          title="Set up RahBaz"
           identity={
-            <div className="flex items-baseline gap-1.5" role="img" aria-label="T3 Code">
-              <T3Wordmark className="h-4 w-auto shrink-0" aria-hidden />
-              <span className="text-2xl font-medium tracking-tight text-muted-foreground">
-                Code
-              </span>
+            <div className="flex items-baseline gap-1.5" role="img" aria-label="RahBaz">
+              <span className="text-2xl font-semibold tracking-tight text-foreground">RahBaz</span>
             </div>
           }
         >
@@ -444,7 +441,7 @@ function ConnectionStep({
       ) : null}
       <div className="mt-6 flex flex-col-reverse gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
         <p className="min-w-0 text-xs leading-relaxed text-muted-foreground">
-          {telemetryOff ?? "T3 Code collects anonymous usage data to help us improve it."} To read
+          {telemetryOff ?? "RahBaz collects anonymous usage data to help us improve it."} To read
           more about how your data is used{telemetryOff === undefined ? " and how to opt out" : ""},
           see our{" "}
           <a
@@ -543,7 +540,7 @@ function ConnectAccountOption({
             </p>
             <CommandBlock command="npx t3 connect" className="mt-3" />
             <p className="mt-3 text-xs text-muted-foreground">
-              Keep T3 Code running. Select the computers you want to set up above.
+              Keep RahBaz running. Select the computers you want to set up above.
             </p>
           </div>
         </CollapsiblePanel>
@@ -649,7 +646,7 @@ function PairingForm({
           </div>
           <CollapsiblePanel>
             <p className="pt-3 text-sm text-muted-foreground">
-              On the computer with your code, start T3 Code or run{" "}
+              On the computer with your code, start RahBaz or run{" "}
               <code className="font-mono">npx t3 serve</code>, then run:
             </p>
             <CommandBlock command="npx t3 pair" className="mt-2" />
@@ -685,13 +682,13 @@ function AgentsStep({
   const { environments } = useEnvironments();
   return (
     <StepShell
-      title="Connect your agents"
-      description="Choose an agent to start coding. You can add more later."
+      title="Connect RahBaz Hub"
+      description="Enter the Hub URL and gateway API key. Claude, Codex, and other provider logins stay on the Hub — this Client only talks to Hub."
     >
       <ScrollArea scrollFade className="mt-5 h-auto max-h-[min(32rem,55dvh)]">
         <div className="space-y-5 pr-3">
           {environmentIds.map((environmentId) => (
-            <ConnectedAgentsStep
+            <HubConnectStep
               key={environmentId}
               environmentId={environmentId}
               machineLabel={
@@ -709,6 +706,117 @@ function AgentsStep({
         </Button>
       </div>
     </StepShell>
+  );
+}
+
+function HubConnectStep({
+  environmentId,
+  machineLabel,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly machineLabel: string;
+}) {
+  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  const update = useAtomCommand(serverEnvironment.updateSettings, "Hub connection settings");
+  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
+    reportFailure: false,
+  });
+  const instanceId = defaultInstanceIdForDriver(ProviderDriverKind.make("opencode"));
+  const settings = serverConfig?.settings;
+  const instance = settings?.providerInstances[instanceId] ?? {
+    driver: ProviderDriverKind.make("opencode"),
+    enabled: true,
+    config: {},
+  };
+  const config =
+    instance.config !== null && typeof instance.config === "object" ? instance.config : {};
+  const [hubBaseUrl, setHubBaseUrl] = useState(
+    typeof config.hubBaseUrl === "string" && config.hubBaseUrl.trim().length > 0
+      ? config.hubBaseUrl
+      : DEFAULT_ONBOARDING_HUB_URL,
+  );
+  const [hubApiKey, setHubApiKey] = useState(
+    typeof config.hubApiKey === "string" ? config.hubApiKey : "",
+  );
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const persist = async () => {
+    if (!settings) return;
+    setSaving(true);
+    try {
+      await update({
+        environmentId,
+        input: {
+          patch: buildProviderInstanceUpdatePatch({
+            settings,
+            instanceId,
+            instance: {
+              ...instance,
+              enabled: true,
+              config: {
+                ...config,
+                enabled: true,
+                hubBaseUrl: hubBaseUrl.trim() || DEFAULT_ONBOARDING_HUB_URL,
+                hubApiKey: hubApiKey.trim(),
+              },
+            },
+          }),
+        },
+      });
+      void refreshProviders({ environmentId, input: {} });
+      setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="space-y-3">
+      <h2 className="text-sm font-medium">{machineLabel}</h2>
+      <p className="text-sm text-muted-foreground">
+        Start Hub first (<code className="font-mono text-xs">scripts\\up.ps1</code> in the Hub
+        repo), then paste the gateway key from{" "}
+        <code className="font-mono text-xs">config\\config.yaml</code>.
+      </p>
+      <label className="grid gap-1.5 text-sm">
+        <span className="font-medium">Hub URL</span>
+        <Input
+          value={hubBaseUrl}
+          onChange={(event) => {
+            setSaved(false);
+            setHubBaseUrl(event.target.value);
+          }}
+          placeholder={DEFAULT_ONBOARDING_HUB_URL}
+          autoComplete="off"
+        />
+      </label>
+      <label className="grid gap-1.5 text-sm">
+        <span className="font-medium">Hub API key</span>
+        <Input
+          type="password"
+          value={hubApiKey}
+          onChange={(event) => {
+            setSaved(false);
+            setHubApiKey(event.target.value);
+          }}
+          placeholder="rbgw-…"
+          autoComplete="off"
+        />
+      </label>
+      <div className="flex items-center gap-2">
+        <Button type="button" size="sm" disabled={saving || !settings} onClick={() => void persist()}>
+          {saving ? "Saving…" : "Save Hub connection"}
+        </Button>
+        {saved ? (
+          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+            <CheckIcon className="size-3.5" /> Saved — you can continue
+          </span>
+        ) : (
+          <span className="text-xs text-muted-foreground">You can also skip and set this later in Settings.</span>
+        )}
+      </div>
+    </section>
   );
 }
 

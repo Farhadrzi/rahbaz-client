@@ -37,7 +37,7 @@ function layerElectronApp(
 
   return Layer.succeed(ElectronApp.ElectronApp, {
     metadata: Effect.die("unexpected metadata read"),
-    name: Effect.succeed("T3 Code"),
+    name: Effect.succeed("RahBaz"),
     systemLocale: Effect.succeed("en-US"),
     preferredSystemLanguages: Effect.succeed(["en-US"]),
     whenReady: Effect.void,
@@ -258,16 +258,16 @@ describe("DesktopLifecycle", () => {
         return yield* Deferred.await(relaunched);
       }).pipe(
         Effect.provide(layer),
-        Effect.provideService(HostProcess.ExecutablePath, "/opt/T3 Code/t3code"),
+        Effect.provideService(HostProcess.ExecutablePath, "/opt/RahBaz/t3code"),
         Effect.provideService(HostProcess.Arguments, [
-          "/opt/T3 Code/t3code",
+          "/opt/RahBaz/t3code",
           "--no-sandbox",
           "rahbaz://pair?token=spent",
           "rahbaz://new?prompt=hello",
         ]),
       );
 
-      assert.deepEqual(options, { execPath: "/opt/T3 Code/t3code", args: ["--no-sandbox"] });
+      assert.deepEqual(options, { execPath: "/opt/RahBaz/t3code", args: ["--no-sandbox"] });
     }),
   );
 

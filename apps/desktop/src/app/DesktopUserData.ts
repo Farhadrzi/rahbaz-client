@@ -38,7 +38,7 @@ export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPa
   }) {
     void input.platform;
     const path = yield* Path.Path;
-    // Keep Electron Chromium profile off T3 Code's AppData folders for side-by-side installs.
+    // Keep Electron Chromium profile off RahBaz's AppData folders for side-by-side installs.
     // No legacy T3 migration — RahBaz always uses its own folder names.
     const folderName = input.isDevelopment ? "rahbaz-dev" : "rahbaz";
     return path.join(input.appDataDirectory, folderName);
