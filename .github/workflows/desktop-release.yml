@@ -151,16 +151,29 @@ jobs:
         shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          # GitHub release/CDN 504s break electron-builder; prefer the npm mirror.
+          ELECTRON_MIRROR: https://cdn.npmmirror.com/binaries/electron/
+          ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
         run: |
           set -euo pipefail
           out="${RUNNER_TEMP}/rahbaz-out"
           mkdir -p "$out"
-          node scripts/build-desktop-artifact.ts \
+          # Retry once if the Electron download mirror still flakes.
+          if ! node scripts/build-desktop-artifact.ts \
             --platform "${{ matrix.platform }}" \
             --target "${{ matrix.target }}" \
             --arch "${{ matrix.arch }}" \
             --verbose \
-            --output-dir "$out"
+            --output-dir "$out"; then
+            echo "First desktop build attempt failed; retrying once..."
+            sleep 15
+            node scripts/build-desktop-artifact.ts \
+              --platform "${{ matrix.platform }}" \
+              --target "${{ matrix.target }}" \
+              --arch "${{ matrix.arch }}" \
+              --verbose \
+              --output-dir "$out"
+          fi
           echo "OUT_DIR=$out" >> "$GITHUB_ENV"
           ls -la "$out"
 
